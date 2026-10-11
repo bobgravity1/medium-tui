@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ ! -x "$ROOT/.venv/bin/medium-reader" ]; then
+  echo "Run $ROOT/install.sh first." >&2
+  exit 1
+fi
+exec "$ROOT/.venv/bin/medium-reader" "$@"

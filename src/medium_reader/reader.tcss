@@ -1,0 +1,36 @@
+Screen { background: #1e1e2e; color: #cdd6f4; }
+#brand { height: 2; padding: 0 2; color: #b4befe; background: #181825; text-style: bold; }
+#workspace { height: 1fr; }
+#sidebar { width: 29%; min-width: 25; max-width: 39; padding: 1 1; background: #181825; border-right: solid #313244; }
+#side-title { height: auto; padding: 0 1; color: #b4befe; text-style: bold; }
+#side-subtitle { height: auto; margin: 0 1 1 1; color: #7f849c; }
+#navigation, #outline { height: 1fr; border: none; padding: 0; background: #181825; }
+OptionList > .option-list--option { padding: 0 1; }
+OptionList > .option-list--option-highlighted { background: #313244; color: #cdd6f4; text-style: none; }
+OptionList:focus > .option-list--option-highlighted { background: #313244; color: #cdd6f4; text-style: bold; }
+OptionList > .option-list--separator { color: #313244; }
+#reading-progress { height: auto; padding: 1 1 0 1; color: #b4befe; }
+#main { width: 1fr; padding: 1 2 0 2; }
+#view-title { height: auto; max-height: 4; color: #cdd6f4; text-style: bold; }
+#view-meta { height: auto; color: #a6adc8; margin-bottom: 1; }
+#stories { height: 1fr; border: none; padding: 0; background: #1e1e2e; }
+#empty { height: auto; max-width: 72; padding: 2 0; color: #a6adc8; }
+#reader { height: 1fr; background: #1e1e2e; align-horizontal: center; }
+#document { width: 100%; max-width: 84; padding: 0 1 2 1; background: #1e1e2e; color: #cdd6f4; }
+MarkdownH1 { content-align: left middle; border: none; margin: 0 0 1 0; padding: 0; color: #b4befe; text-style: bold; }
+MarkdownH2 { border: none; margin: 1 0; padding: 0; color: #89b4fa; text-style: bold; }
+MarkdownH3, MarkdownH4, MarkdownH5, MarkdownH6 { margin: 1 0; color: #a6e3a1; text-style: bold; }
+MarkdownParagraph { margin: 0 0 1 0; }
+MarkdownFence { background: #181825; color: #cdd6f4; margin: 0 0 1 0; padding: 1; }
+MarkdownBlockQuote { border-left: thick #b4befe; background: #242436; color: #a6adc8; margin: 0 0 1 0; }
+Markdown .code_inline { background: #313244; color: #f5c2e7; }
+Markdown { link-color: #89b4fa; }
+#status-row { height: 2; background: #181825; }
+#status { width: 1fr; height: 2; padding: 0 2; color: #a6adc8; background: #181825; }
+#copy-status { width: 14; height: 2; padding: 0 2; content-align: right middle; color: #a6e3a1; }
+MarkdownParagraph.copied-paragraph { background: #29293c; }
+#command { height: 3; margin: 0; border: tall #313244; background: #181825; padding: 0 1; }
+#command:focus { border: tall #b4befe; }
+Footer { background: #181825; color: #a6adc8; }
+Footer > .footer--key { background: #313244; color: #b4befe; }
+* { scrollbar-color: #585b70; scrollbar-color-hover: #7f849c; scrollbar-color-active: #b4befe; scrollbar-background: #1e1e2e; scrollbar-size-vertical: 1; }
