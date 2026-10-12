@@ -1,3 +1,3 @@
 """A small, independent Medium RSS and article reader."""
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"

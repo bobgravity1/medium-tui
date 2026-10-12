@@ -22,7 +22,7 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
-from .chrome import ChromeFeed
+from .chrome import ChromeFeed, ConnectionRequired
 from .core import Article, MediumClient, ReaderError, clean_line, safe_url, topic_slug
 from .home import merge_home
 from .storage import Store
@@ -79,7 +79,9 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command")
-    search = sub.add_parser("search", parents=[common], help="find recent stories by topic/tag")
+    search = sub.add_parser(
+        "search", aliases=["/search"], parents=[common], help="find recent stories by topic/tag"
+    )
     search.add_argument("topic", nargs="+", help="a topic such as python or machine learning")
     search.add_argument(
         "--limit", type=positive_int, default=10, help="maximum results (default: 10)"
@@ -93,7 +95,9 @@ def parser() -> argparse.ArgumentParser:
     )
     search.add_argument("--offline", action="store_true", help="use the last fetched topic feed")
     search.add_argument("--sort", choices=("recent", "popular"), default="recent")
-    home = sub.add_parser("home", parents=[common], help="browse your signed-in Medium homepage")
+    home = sub.add_parser(
+        "home", aliases=["/home"], parents=[common], help="browse your signed-in Medium homepage"
+    )
     home.add_argument("--offline", action="store_true", help="browse previously fetched home cards")
     home.add_argument(
         "--limit", type=positive_int, default=20, help="cards to fetch for --list/--json"
@@ -102,11 +106,21 @@ def parser() -> argparse.ArgumentParser:
     home.add_argument("--json", action="store_true", help="print story metadata as JSON")
     home.add_argument("--list", action="store_true", help="print once instead of browsing")
     home.add_argument("--sort", choices=("recent", "popular"), default="recent")
-    sub.add_parser("login", parents=[common], help="open your default browser and connect Medium")
     sub.add_parser(
-        "logout", parents=[common], help="disconnect the reader; keep your browser signed in"
+        "login",
+        aliases=["/login"],
+        parents=[common],
+        help="open your default browser and connect Medium",
     )
-    favorites = sub.add_parser("favorites", parents=[common], help="browse your saved Reading list")
+    sub.add_parser(
+        "logout",
+        aliases=["/logout"],
+        parents=[common],
+        help="disconnect the reader; keep your browser signed in",
+    )
+    favorites = sub.add_parser(
+        "favorites", aliases=["/favorites"], parents=[common], help="browse your saved Reading list"
+    )
     favorites.add_argument(
         "--offline", action="store_true", help="browse previously fetched saved stories"
     )
@@ -115,7 +129,10 @@ def parser() -> argparse.ArgumentParser:
     favorites.add_argument("--list", action="store_true")
     favorites.add_argument("--sort", choices=("recent", "popular"), default="recent")
     read = sub.add_parser(
-        "read", parents=[common], help="read a result number or Medium article URL"
+        "read",
+        aliases=["/read"],
+        parents=[common],
+        help="read a result number or Medium article URL",
     )
     read.add_argument("target", help="a number from your latest search, or an HTTPS Medium URL")
     read.add_argument("--format", choices=("rich", "plain", "markdown", "json"), default=None)
@@ -283,7 +300,7 @@ class App:
 
     def home(self, limit: int = 20, offline: bool = False, sort: str = "recent") -> list[Article]:
         if offline:
-            articles = self.store.home()[:limit]
+            articles = self.store.home()
         else:
             with nullcontext(self.chrome) as feed:
                 articles = []
@@ -294,33 +311,34 @@ class App:
                     articles = expanded
                     if len(articles) >= limit:
                         break
-            articles = self._sort_articles(articles, sort)[:limit]
             self.store.remember_home(articles)
+        articles = self._sort_articles(articles, sort)[:limit]
         self.store.remember_results(articles)
         return articles
 
     def login(self) -> None:
         feed = self.chrome
-        if not feed.connected:
-            feed.begin_login()
-            self.console.print(
-                "Connect the Medium Reader extension in Chrome, then sign in if needed. "
-                "Your password and cookies stay in Chrome."
-            )
-            answer = (
-                Prompt.ask("When Medium is ready, type done (q cancels)", console=self.console)
-                .strip()
-                .lower()
-            )
-            if answer != "done":
-                self.console.print("Connection paused. Enter /login to open the browser again.")
-                return
+        feed.begin_login()
+        self.console.print(
+            "Connect the Medium Reader extension in Chrome, then sign in if needed. "
+            "Your password and cookies stay in Chrome."
+        )
+        answer = (
+            Prompt.ask("When Medium is ready, type done (q cancels)", console=self.console)
+            .strip()
+            .lower()
+        )
+        if answer != "done":
+            self.console.print("Connection paused. Enter /login to open the browser again.")
+            return
         self.remember_home(feed.confirm_login())
         self.console.print("Chrome connected. Use /home or /favorites.")
 
     def browse_home(self, offline: bool = False, page_size: int = 8, sort: str = "recent") -> None:
         context = nullcontext(None) if offline else nullcontext(self.chrome)
         with context as feed:
+            if feed is not None:
+                feed.loaded = False
             with self.console.status("Loading your homepage…"):
                 articles = self.store.home() if offline else feed.load_more()
             self.remember_home(articles)
@@ -353,9 +371,11 @@ class App:
                     return
                 if value == "/favorites":
                     self.browse_favorites()
+                    self.store.remember_results(articles)
                     continue
                 if value == "/login":
                     self.login()
+                    self.store.remember_results(articles)
                     continue
                 if value == "/logout":
                     self.logout()
@@ -366,6 +386,7 @@ class App:
                 if value in ("/popular", "/recent"):
                     try:
                         articles = self._sort_articles(articles, value[1:])
+                        sort = value[1:]
                         self.store.remember_results(articles)
                         offset = 0
                         self.console.print(f"Sorted by {value[1:]}.", style="dim")
@@ -441,6 +462,8 @@ class App:
                 self.console.print(Text(str(exc), style="red"))
 
     def _sort_articles(self, articles: list[Article], mode: str) -> list[Article]:
+        if not articles:
+            return []
         if mode == "popular":
             if not any(article.claps is not None for article in articles):
                 raise ReaderError(
@@ -478,14 +501,16 @@ class App:
 
         return sorted(articles, key=published, reverse=True)
 
-    def browse_results(self, topic: str, articles: list[Article], page_size: int = 8) -> None:
+    def browse_results(
+        self, topic: str, articles: list[Article], page_size: int = 8, *, offline: bool = False
+    ) -> None:
         offset = 0
         while articles:
             show_results(
                 self.console,
                 topic,
                 articles[offset : offset + page_size],
-                False,
+                offline,
                 start=offset + 1,
                 description="Stories available from Medium's public topic feed",
             )
@@ -543,7 +568,7 @@ class App:
                 continue
             try:
                 with self.console.status("Loading article…"):
-                    article = self.read(value)
+                    article = self.read(value, offline=offline)
                 show_article(self.console, article, "rich", pager=True)
             except ReaderError as exc:
                 self.console.print(Text(str(exc), style="red"))
@@ -607,6 +632,8 @@ class App:
             if answer in ("/popular", "/recent"):
                 try:
                     articles = self._sort_articles(articles, answer[1:])
+                    sort = answer[1:]
+                    self.store.remember_results(articles)
                     offset = 0
                 except ReaderError as exc:
                     self.console.print(Text(str(exc), style="yellow"))
@@ -628,6 +655,8 @@ class App:
 def main(argv: list[str] | None = None) -> int:
     p = parser()
     args = p.parse_args(argv)
+    if args.command is not None:
+        args.command = args.command.lstrip("/")
     if args.command is None:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             p.print_help()
@@ -666,6 +695,19 @@ def main(argv: list[str] | None = None) -> int:
 
             ReaderUI(app, args=args).run()
             return 0
+        if args.command in ("home", "favorites") and not args.offline:
+            feed = app.chrome
+            if not feed.connected:
+                if not sys.stdin.isatty():
+                    raise ConnectionRequired(
+                        "Live home/favorites need a Chrome connection in a terminal. "
+                        "Run medium-reader, enter /login, or use --offline for cached results."
+                    )
+                errors.print(
+                    "Opening your browser. Click Connect and sign in to Medium if prompted."
+                )
+                feed.begin_login()
+                feed.wait_for_login()
         if args.command == "interactive":
             app.interactive()
         elif args.command == "login":
@@ -705,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
         elif args.command == "favorites":
             if console.is_terminal and sys.stdin.isatty() and not args.json and not args.list:
-                app.browse_favorites(args.offline, args.page_size)
+                app.browse_favorites(args.offline, args.page_size, args.sort)
             else:
                 articles = app.favorites(args.offline, args.sort)
                 if args.json:
@@ -749,7 +791,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 show_results(console, topic, articles, args.offline)
             if args.pick:
-                app.browse_results(topic, articles)
+                app.browse_results(topic, articles, offline=args.offline)
         else:
             article = app.read(args.target, args.offline, args.refresh)
             if args.save:

@@ -9,6 +9,7 @@ import asyncio
 import os
 import re
 from argparse import Namespace
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from rich.text import Text
@@ -21,7 +22,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Footer, Input, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
 
-from .chrome import SignInRequired
+from .chrome import ConnectionRequired, SignInRequired
 from .clipboard import copy_text
 from .core import Article, ReaderError, article_key, topic_slug
 from .home import merge_home
@@ -89,6 +90,9 @@ class ReaderUI(TextualApp):
         self.article: Article | None = None
         self.feed = None
         self.login_pending = False
+        self.login_target = "home"
+        self.showing_login_gate = False
+        self.last_connection_state = ""
         self.source = "home"
         self.topic = ""
         self.sort = getattr(self.args, "sort", "recent")
@@ -100,6 +104,7 @@ class ReaderUI(TextualApp):
         self.sidebar_hidden = False
         self.saved_fraction = 0.0
         self.restore_pending = False
+        self.edge_intent: bool | None = None
         self.active_section = 0
         self.copied_paragraph: Static | None = None
         self.copy_timer = None
@@ -139,11 +144,12 @@ class ReaderUI(TextualApp):
         elif self.args.command == "search":
             self.operate("search", " ".join(self.args.topic))
         elif self.args.command == "favorites":
-            self.operate("favorites")
+            self.login_target = "favorites"
+            self.operate("favorites" if self.offline else "login")
         elif self.args.command == "login":
             self.operate("login")
         elif self.offline or self.args.command == "home":
-            self.operate("home")
+            self.operate("home" if self.offline else "login")
         else:
             self.show_login_gate()
         self.on_resize()
@@ -165,10 +171,16 @@ class ReaderUI(TextualApp):
 
     def show_login_gate(self, message: str = "") -> None:
         self.save_position()
+        self.clear_copy_feedback()
         self.reading = False
+        self.restore_pending = False
+        self.showing_login_gate = True
         self.query_one("#reader").display = False
         self.query_one("#outline").display = False
         self.query_one("#navigation").display = True
+        self.query_one("#side-title", Static).update("LIBRARY")
+        self.query_one("#side-subtitle", Static).update("Chrome connection")
+        self.query_one("#reading-progress", Static).update("")
         self.show_empty(
             "Connect your Medium account",
             message
@@ -182,8 +194,31 @@ class ReaderUI(TextualApp):
     def check_connection(self) -> None:
         feed = self.backend._chrome
         if self.login_pending and feed and feed.connected and not self.busy:
-            self.login_pending = False
-            self.operate("done")
+            if self.showing_login_gate:
+                self.operate("done")
+            else:
+                # Chrome may finish sign-in while the user reads/searches. Do not
+                # unexpectedly replace their article or result-number mapping.
+                self.login_pending = False
+                self.status("Chrome connected · /home or /favorites when you're ready")
+        elif self.login_pending and feed and not self.busy:
+            state = feed.state
+            if state != self.last_connection_state and isinstance(state, str):
+                self.last_connection_state = state
+                messages = {
+                    "waiting-for-extension": "Waiting for the extension's Connect button…",
+                    "waiting-for-browser": "Chrome connected; waiting for Medium to load…",
+                    "sign-in-required": (
+                        "Sign in to Medium in Chrome. This reader updates automatically."
+                    ),
+                    "disconnected": "Chrome connection lost. Enter /login to reopen the browser.",
+                    "error": (
+                        "Chrome could not load the account view. "
+                        "Refresh its Medium tab or retry /login."
+                    ),
+                }
+                if state in messages:
+                    self.status(messages[state])
 
     def status(self, message: str) -> None:
         self.query_one("#status", Static).update(message)
@@ -197,6 +232,7 @@ class ReaderUI(TextualApp):
         empty.display = True
 
     def show_feed(self, *, reset: bool = False) -> None:
+        self.showing_login_gate = False
         self.reading = False
         self.heading_rows = []
         self.query_one("#outline").display = False
@@ -241,7 +277,7 @@ class ReaderUI(TextualApp):
         else:
             stories.highlighted = min(index, len(self.articles) - 1)
         self.backend.store.remember_results(self.articles)
-        stories.focus()
+        (stories if self.articles else self.query_one("#command", Input)).focus()
         self.on_resize()
 
     @work()
@@ -253,7 +289,9 @@ class ReaderUI(TextualApp):
         self.status(f"Loading {action}…")
         try:
             await self.perform(action, value)
-        except SignInRequired as exc:
+        except (ConnectionRequired, SignInRequired) as exc:
+            if action in ("home", "favorites"):
+                self.login_target = action
             self.show_login_gate(str(exc) + " Enter /login to open the browser.")
             self.status(str(exc))
         except (ReaderError, OSError) as exc:
@@ -262,6 +300,8 @@ class ReaderUI(TextualApp):
             self.status(str(exc))
             self.notify(str(exc), title="Couldn't load", severity="warning", timeout=8)
         finally:
+            if action == "done":
+                self.login_pending = False
             self.busy = False
 
     async def perform(self, action: str, value: str) -> None:
@@ -280,10 +320,14 @@ class ReaderUI(TextualApp):
             else:
                 try:
                     article = await asyncio.to_thread(self.backend.client.read, item.url)
-                except ReaderError:
+                except ReaderError as exc:
                     if not cached or not cached.markdown:
                         raise
-                    article = cached
+                    article = replace(
+                        cached, note=f"Only the cached topic preview is available. {exc}"
+                    )
+                if cached and not article.tags:
+                    article.tags = cached.tags
                 store.put(article)
             await self.display_article(article)
             return
@@ -291,16 +335,16 @@ class ReaderUI(TextualApp):
             if self.offline:
                 raise ReaderError("Restart without --offline to sign in.")
             self.feed = self.backend.chrome
-            if self.feed.connected:
-                await self.perform("done", "")
-                return
             await asyncio.to_thread(self.feed.begin_login)
             self.login_pending = True
             self.show_login_gate(
                 "Waiting for Chrome…\n\nClick Connect on the page that opened. "
                 "Sign in to Medium if prompted.\nThe feed appears here automatically.\n\n"
-                "If the Connect button is missing, follow the extension installation "
-                "instructions on that page, then reload it."
+                "No Connect button? Follow the one-time extension setup on that page. "
+                "On macOS, use Command–Shift–G in the folder picker to paste its folder path. "
+                "Then reload the connection page in Chrome.\n\n"
+                "If it opened in another browser, copy its full address into your normal "
+                "Chrome window. Keep the connected Medium tab open."
             )
             self.status("Waiting for Chrome · /login opens the browser again · topics still work")
             return
@@ -309,9 +353,17 @@ class ReaderUI(TextualApp):
                 raise ReaderError("Restart without --offline to connect Chrome.")
             self.feed = self.backend.chrome
             articles = await asyncio.to_thread(self.feed.confirm_login)
+            self.save_position()
             self.login_pending = False
             store.remember_home(articles)
-            self.source, self.articles = "home", articles
+            if self.login_target == "favorites":
+                articles = await asyncio.to_thread(self.feed.load_favorites)
+                store.remember_favorites(articles)
+            self.source, self.articles = (
+                self.login_target,
+                self.backend._sort_articles(articles, "recent"),
+            )
+            self.sort = "recent"
             self.show_feed(reset=True)
             self.status("Chrome connected · /home · /favorites · /logout disconnects the reader")
             return
@@ -391,19 +443,28 @@ class ReaderUI(TextualApp):
                     store.remember_home(articles)
                 else:
                     store.remember_favorites(articles)
+            if action in ("home", "favorites"):
+                self.login_target = action
             self.source = action
             self.articles = articles
+            fallback = ""
             try:
                 self.articles = self.backend._sort_articles(articles, self.sort)
             except ReaderError:
                 self.sort = "recent"
-                self.status("Clap counts unavailable; showing recent stories.")
+                self.articles = self.backend._sort_articles(articles, "recent")
+                fallback = "Clap counts unavailable; showing recent stories."
             self.show_feed(reset=True)
-            self.status("Enter opens a story · ↑/↓ browse · n loads more homepage stories · /help")
+            self.status(
+                fallback
+                or "Enter opens a story · ↑/↓ browse · n loads more homepage stories · /help"
+            )
 
     async def display_article(self, article: Article) -> None:
+        self.showing_login_gate = False
         self.clear_copy_feedback()
         self.article, self.reading = article, True
+        self.edge_intent = None
         self.heading_rows = []
         self.last_progress = ()
         self.query_one("#navigation").display = False
@@ -430,6 +491,9 @@ class ReaderUI(TextualApp):
         self.on_resize()
 
     def restore_position(self) -> None:
+        if self.edge_intent is not None:
+            self.sync_progress()
+            return
         if not self.restore_pending or not self.reading:
             return
         self.restore_pending = False
@@ -439,29 +503,66 @@ class ReaderUI(TextualApp):
 
     @on(Markdown.TableOfContentsUpdated)
     def outline_updated(self, event: Markdown.TableOfContentsUpdated) -> None:
-        self.heading_rows = event.table_of_contents
-        outline = self.query_one("#outline", OptionList)
-        outline.clear_options()
-        outline.add_options([Option(Text(title), id=key) for _, title, key in self.heading_rows])
-        self.last_progress = ()
+        # A queued TOC message can refer to blocks already replaced by a later
+        # update. Always use the heading widgets currently mounted in this doc.
+        self.refresh_outline()
         self.call_after_refresh(self.sync_progress)
 
+    def refresh_outline(self) -> list[Static]:
+        doc = self.query_one("#document", Markdown)
+        headings = list(
+            doc.query("MarkdownH1, MarkdownH2, MarkdownH3, MarkdownH4, MarkdownH5, MarkdownH6")
+        )
+        rows = [
+            (
+                int(type(heading).__name__[-1]),
+                heading.renderable.plain
+                if isinstance(heading.renderable, Text)
+                else str(heading.renderable),
+                heading.id,
+            )
+            for heading in headings
+            if heading.id
+        ]
+        if rows == self.heading_rows:
+            return headings
+        self.heading_rows = rows
+        outline = self.query_one("#outline", OptionList)
+        index = outline.highlighted
+        outline.clear_options()
+        outline.add_options([Option(Text(title), id=key) for _, title, key in self.heading_rows])
+        if index is not None and rows:
+            outline.highlighted = min(index, len(rows) - 1)
+        self.last_progress = ()
+        return headings
+
     def sync_progress(self) -> None:
-        if not self.reading or not self.heading_rows:
+        if not self.reading:
             return
         reader = self.query_one("#reader", VerticalScroll)
-        doc = self.query_one("#document", Markdown)
+        headings = self.refresh_outline()
+        if self.edge_intent is not None and not self.busy:
+            end = self.edge_intent
+            self.edge_intent = None
+            self.restore_pending = False
+            # Textual otherwise defers even a nonanimated scroll until refresh,
+            # leaving the progress calculation below at the previous position.
+            scroll_edge = reader.scroll_end if end else reader.scroll_home
+            scroll_edge(animate=False, immediate=True)
         position = reader.scroll_y
-        # Virtual coordinates stay stable while a scroll event awaits repaint.
-        try:
-            starts = [
-                max(0, doc.virtual_region.y + doc.query_one(f"#{key}").virtual_region.y)
-                for _, _, key in self.heading_rows
-            ]
-        except NoMatches:
-            # Markdown children mount asynchronously and unmount during shutdown.
-            return
         fraction = position / reader.max_scroll_y if reader.max_scroll_y else 1.0
+        if not headings:
+            self.last_progress = (round(fraction * 100), 0, ())
+            return
+        # Virtual coordinates stay stable while a scroll event awaits repaint.
+        starts = []
+        for heading in headings:
+            offset = heading.virtual_region.y
+            parent = heading.parent
+            while parent is not None and parent is not reader:
+                offset += parent.virtual_region.y
+                parent = parent.parent
+            starts.append(max(0, offset))
         values = []
         for i, (level, _, _) in enumerate(self.heading_rows):
             stop = next(
@@ -510,7 +611,12 @@ class ReaderUI(TextualApp):
             self.operate("read", str(event.option_index))
         elif event.option_list.id == "outline":
             self.restore_pending = False
-            heading = self.query_one(f"#{event.option.id}")
+            self.edge_intent = None
+            try:
+                heading = self.query_one(f"#{event.option.id}")
+            except NoMatches:
+                self.call_after_refresh(self.sync_progress)
+                return
             self.query_one("#reader", VerticalScroll).scroll_to_widget(
                 heading, top=True, animate=False, force=True
             )
@@ -564,8 +670,10 @@ class ReaderUI(TextualApp):
             self.operate("search", value)
         if self.reading:
             self.query_one("#reader").focus()
-        else:
+        elif self.query_one("#stories").display:
             self.query_one("#stories").focus()
+        else:
+            self.query_one("#command", Input).focus()
 
     @on(Markdown.LinkClicked)
     def link_clicked(self, event: Markdown.LinkClicked) -> None:
@@ -584,7 +692,16 @@ class ReaderUI(TextualApp):
     def action_back(self) -> None:
         if self.query_one("#command", Input).has_focus:
             self.query_one("#command", Input).value = ""
-            self.query_one("#reader" if self.reading else "#stories").focus()
+            if self.showing_login_gate and self.articles:
+                self.show_feed()
+            else:
+                self.query_one(
+                    "#reader"
+                    if self.reading
+                    else "#stories"
+                    if self.query_one("#stories").display
+                    else "#navigation"
+                ).focus()
         elif self.reading:
             self.save_position()
             self.show_feed()
@@ -596,6 +713,7 @@ class ReaderUI(TextualApp):
         self.operate("more")
 
     def action_move(self, direction: int) -> None:
+        self.edge_intent = None
         self.restore_pending = False
         focused = self.focused
         if isinstance(focused, OptionList):
@@ -609,8 +727,7 @@ class ReaderUI(TextualApp):
         if isinstance(self.focused, OptionList):
             self.focused.action_last() if end else self.focused.action_first()
         elif self.reading:
-            reader = self.query_one("#reader", VerticalScroll)
-            reader.scroll_end(animate=False) if end else reader.scroll_home(animate=False)
+            self.edge_intent = end
             self.sync_progress()
             self.call_after_refresh(self.sync_progress)
 
@@ -640,6 +757,8 @@ class ReaderUI(TextualApp):
         event.stop()
         text = content.plain.strip()
         native = await asyncio.to_thread(copy_text, text)
+        if not self.is_running or not self.reading or not paragraph.is_mounted:
+            return
         if not native:
             # OSC 52 provides clipboard access through supporting terminals/SSH.
             self.copy_to_clipboard(text)

@@ -2,6 +2,8 @@
   if (location.pathname !== "/connect" || !document.querySelector("#medium-reader-connect")) return;
   const token = location.hash.slice(1);
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return;
+  document.querySelector("#connection").textContent = "Extension detected. Connect this tab to your reader.";
+  document.querySelector("ol")?.setAttribute("hidden", "");
   const button = document.createElement("button");
   button.textContent = "Connect and open Medium";
   document.querySelector("#medium-reader-connect").append(button);

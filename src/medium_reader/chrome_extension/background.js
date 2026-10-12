@@ -12,7 +12,13 @@ async function handle(message, sender) {
       throw new Error("Invalid connection link. Run /login again.");
     }
     const session = {endpoint: url.origin, token: message.token};
-    await request(session, "/pair", {});
+    const paired = await request(session, "/pair", {});
+    if (typeof paired.session !== "string") throw new Error("Update the reader and reload this extension.");
+    session.session = paired.session;
+    // Reconnecting binds this reader to one tab/account; previous tabs stop sharing.
+    const previous = await chrome.storage.session.get(null);
+    const obsolete = Object.keys(previous).filter(key => previous[key]?.endpoint === url.origin);
+    if (obsolete.length) await chrome.storage.session.remove(obsolete);
     await chrome.storage.session.set({[key]: session});
     await chrome.tabs.update(sender.tab.id, {url: "https://medium.com/"});
     return {ok: true};
@@ -32,20 +38,34 @@ async function handle(message, sender) {
 }
 
 async function request(session, path, data) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
   const response = await fetch(session.endpoint + path, {
     method: data ? "POST" : "GET",
-    headers: {Authorization: `Bearer ${session.token}`, "Content-Type": "application/json"},
+    headers: {Authorization: `Bearer ${session.token}`, "Content-Type": "application/json",
+              "X-Medium-Reader-Session": session.session || ""},
     body: data ? JSON.stringify(data) : undefined,
     credentials: "omit",
     cache: "no-store",
-    signal: AbortSignal.timeout(5000)
+    signal: controller.signal
   });
-  if (!response.ok) throw new Error("Reader connection closed. Run /login to reconnect.");
-  return response.json();
+  if (!response.ok) {
+    const error = new Error("Reader connection closed. Run /login to reconnect.");
+    error.retryable = response.status >= 500;
+    throw error;
+  }
+  return await response.json();
+  } catch (error) {
+    if (typeof error.retryable !== "boolean") error.retryable = true;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
-  handle(message, sender).then(respond, error => respond({error: error.message}));
+  handle(message, sender).then(respond, error => respond({error: error.message, retryable: !!error.retryable}));
   return true;
 });
 chrome.tabs.onRemoved.addListener(tabId => chrome.storage.session.remove(`tab:${tabId}`));

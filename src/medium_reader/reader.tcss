@@ -31,6 +31,7 @@ Markdown { link-color: #89b4fa; }
 MarkdownParagraph.copied-paragraph { background: #29293c; }
 #command { height: 3; margin: 0; border: tall #313244; background: #181825; padding: 0 1; }
 #command:focus { border: tall #b4befe; }
+#command > .input--selection { background: #b4befe; color: #181825; }
 Footer { background: #181825; color: #a6adc8; }
 Footer > .footer--key { background: #313244; color: #b4befe; }
 * { scrollbar-color: #585b70; scrollbar-color-hover: #7f849c; scrollbar-color-active: #b4befe; scrollbar-background: #1e1e2e; scrollbar-size-vertical: 1; }

@@ -264,14 +264,15 @@ def test_login_opens_browser_and_waits_for_confirmation(app, monkeypatch):
     assert app.store.home() == articles
 
 
-def test_login_reuses_verified_chrome_connection(app, monkeypatch):
+def test_login_opens_browser_even_if_previously_connected(app, monkeypatch):
     factory, feed = mock_home(monkeypatch)
     articles = [story(3)]
     feed.connected = True
     feed.confirm_login.return_value = articles
+    prompt_answers(monkeypatch, "done")
     app.login()
     factory.assert_called_once_with()
-    feed.begin_login.assert_not_called()
+    feed.begin_login.assert_called_once_with()
     feed.confirm_login.assert_called_once_with()
     assert app.store.home() == articles
 
@@ -305,3 +306,91 @@ def test_partial_page_fills_before_advancing_so_new_cards_are_not_skipped(app, m
         (1, articles[:3]),
         (4, articles[3:]),
     ]
+
+
+def test_favorites_sort_updates_result_numbers_before_reading(app, monkeypatch):
+    first = replace(story(1), claps=10)
+    popular = replace(story(2), claps=100)
+    _, feed = mock_home(monkeypatch)
+    feed.load_favorites.return_value = [first, popular]
+    displayed_pages(monkeypatch)
+    show = Mock()
+    monkeypatch.setattr(cli, "show_article", show)
+    prompt_answers(monkeypatch, "/popular", "1", "b")
+    app.browse_favorites()
+    assert show.call_args.args[1] == popular
+
+
+def test_offline_home_sorts_before_limiting(app):
+    old = replace(story(1), published="2026-10-01")
+    new = replace(story(2), published="2026-10-11")
+    app.store.remember_home([old, new])
+    assert app.home(limit=1, offline=True)[0] == new
+
+
+def test_empty_popularity_sort_is_valid(app):
+    assert app._sort_articles([], "popular") == []
+
+
+def test_slash_command_aliases_work_after_global_options(tmp_path, capsys):
+    assert cli.main(["--data-dir", str(tmp_path), "/logout"]) == 0
+    assert "disconnected" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["home", "favorites"])
+def test_one_shot_live_json_connects_in_browser_without_polluting_stdout(
+    tmp_path, monkeypatch, capsys, command
+):
+    _, feed = mock_home(monkeypatch, [[story(1)]])
+    feed.load_favorites.return_value = [story(1)]
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    argv = ["--data-dir", str(tmp_path), command, "--json"]
+    if command == "home":
+        argv += ["--limit", "1"]
+    assert cli.main(argv) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)[0]["title"] == "Story 1"
+    assert "Opening your browser" in captured.err
+    feed.begin_login.assert_called_once_with()
+    feed.wait_for_login.assert_called_once_with()
+    feed.close.assert_called_once_with()
+
+
+def test_unattended_live_cli_does_not_open_browser_or_wait_for_login(tmp_path, monkeypatch, capsys):
+    _, feed = mock_home(monkeypatch)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    assert cli.main(["--data-dir", str(tmp_path), "home", "--json"]) == 1
+    assert capsys.readouterr().out == ""
+    feed.begin_login.assert_not_called()
+    feed.wait_for_login.assert_not_called()
+
+
+def test_offline_topic_picker_cannot_fetch_article_online(app, monkeypatch):
+    item = replace(story(1), source="rss-preview")
+    app.store.remember_topic("python", [item])
+    prompt_answers(monkeypatch, "1", "b")
+    monkeypatch.setattr(cli, "show_article", Mock())
+    app.browse_results("python", [item], offline=True)
+    app.client.read.assert_not_called()
+
+
+def test_home_restores_result_numbers_after_saved_feed_returns(app, monkeypatch):
+    home, saved = story(1), story(2)
+    _, feed = mock_home(monkeypatch, [[home]])
+    feed.load_favorites.return_value = [saved]
+    prompt_answers(monkeypatch, "/favorites", "b", "1", "b")
+    monkeypatch.setattr(cli, "show_article", show := Mock())
+    app.browse_home()
+    assert show.call_args.args[1] == home
+
+
+def test_loaded_homepage_keeps_popularity_sort_for_new_cards(app, monkeypatch):
+    first = replace(story(1), claps=20, published="2026-10-11")
+    popular = replace(story(2), claps=100, published="2026-10-01")
+    incoming = replace(story(3), claps=50, published="2026-10-10")
+    mock_home(monkeypatch, [[first, popular], [incoming]])
+    prompt_answers(monkeypatch, "/popular", "n", "b")
+    displayed_pages(monkeypatch)
+    app.browse_home(page_size=2)
+    assert app.store.result(1) == popular
+    assert app.store.result(2) == incoming

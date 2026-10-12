@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Medium Reader Connection",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Share rendered Medium feed cards with your local terminal reader. Login stays in Chrome.",
   "minimum_chrome_version": "102",
   "permissions": ["storage"],

@@ -7,6 +7,7 @@
   const signedOut = () => [...document.querySelectorAll("a,button")].some(node =>
     visible(node) && /^sign in$/i.test(node.textContent.trim())
   ) || location.pathname.startsWith("/m/signin");
+  let failures = 0;
 
   async function waitFor(test, timeout = 20000) {
     const deadline = Date.now() + timeout;
@@ -32,20 +33,30 @@
 
   async function send(data) {
     const result = await chrome.runtime.sendMessage({kind: "snapshot", data});
-    if (result?.error) throw new Error(result.error);
+    if (result?.error) {
+      const error = new Error(result.error);
+      error.retryable = !!result.retryable;
+      throw error;
+    }
   }
 
   async function perform(command) {
     const home = "https://medium.com/";
-    if (command.action === "login") {
-      await waitFor(() => signedIn() || signedOut());
-      if (!signedIn()) {
-        if (!location.pathname.startsWith("/m/signin")) {
-          location.assign("https://medium.com/m/signin?redirect=https%3A%2F%2Fmedium.com%2F");
-        }
-        // Leave the login job pending so finishing sign-in completes it automatically.
-        return;
+    // Decide authentication before navigating. A signed-out favorites request
+    // must not repeatedly bounce from /m/signin to /me/lists and back.
+    await waitFor(() => signedIn() || signedOut(), 5000);
+    if (!signedIn() && !signedOut()) {
+      await send(capture(command.id, "Medium's account controls have not loaded. Refresh the connected tab and retry."));
+      return;
+    }
+    if (!signedIn()) {
+      await send(capture(command.action === "login" ? "" : command.id));
+      if (command.action === "login" && !location.pathname.startsWith("/m/signin")) {
+        location.assign("https://medium.com/m/signin?redirect=https%3A%2F%2Fmedium.com%2F");
       }
+      return;
+    }
+    if (command.action === "login") {
       if (location.pathname !== "/") { location.assign(home); return; }
     } else if (command.action === "home" || command.action === "more") {
       if (location.pathname !== "/") { location.assign(home); return; }
@@ -53,7 +64,13 @@
       if (location.pathname === "/me/lists") {
         const found = await waitFor(() => document.querySelector('a[href*="/list/reading-list"]') || signedOut());
         const list = document.querySelector('a[href*="/list/reading-list"]');
-        if (list) { location.assign(list.href); return; }
+      if (list) {
+        const url = new URL(list.href);
+        if (url.origin !== "https://medium.com") {
+          await send(capture(command.id, "The Reading list link is outside Medium.")); return;
+        }
+        location.assign(url.href); return;
+      }
         await send(capture(command.id, found && signedOut() ? "" : "Your Reading list link was not found."));
         return;
       }
@@ -78,11 +95,23 @@
   async function loop() {
     try {
       const command = await chrome.runtime.sendMessage({kind: "command"});
-      if (command?.unpaired || command?.error) return;
+      if (command?.unpaired) return;
+      if (command?.error) {
+        if (!command.retryable) return;
+        const error = new Error(command.error);
+        error.retryable = true;
+        throw error;
+      }
       if (command?.id) await perform(command);
       else await send(capture());
-    } catch (_) { return; } // A closed CLI stops sharing automatically.
-    setTimeout(loop, 1500);
+      failures = 0;
+    } catch (error) {
+      if (error.retryable === false || ++failures >= 8) return;
+    }
+    // Brief transport glitches should not permanently disable the installed tab.
+    // Back off, then stop after repeated failures when a reader is no longer running.
+    setTimeout(loop, Math.min(10000, 1500 * 2 ** failures));
   }
-  loop();
+  if (typeof module !== "undefined") module.exports = {perform, loop, capture};
+  else loop();
 })();
