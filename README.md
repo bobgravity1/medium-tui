@@ -108,6 +108,11 @@ public Medium pages and RSS feeds, so member-only stories may show a preview.
 To read the full paid story, open its original URL on Medium with your membership.
 The reader does not unlock member-only text.
 
+### Open source
+
+Licensed under the [MIT License](LICENSE). You can use, modify, and redistribute
+the project, including commercially; keep the license notice with copies.
+
 ### Windows setup
 
 Use PowerShell from the directory where you want the project:
