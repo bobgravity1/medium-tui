@@ -30,6 +30,12 @@ Replace `/path/to/medium-tui` with the folder where you cloned the project.
 If your terminal is already in that folder, run just `./medium-reader login`.
 You do not need to activate Python or run the installer every time.
 
+**Seeing `(.venv)` in your terminal prompt?** That means this terminal is using
+the project's Python environment. Running `deactivate` removes that terminal
+setting; it **does not disable the Chrome extension or sign you out of Medium**.
+You can still run `./medium-reader login` afterward because the launcher finds
+the project's Python environment automatically.
+
 ### Connect Chrome (one-time extension setup)
 
 The start command opens the reader and a **Connect Medium Reader** browser page.
@@ -60,6 +66,11 @@ automatically. Keep the connected Medium tab open while using `/home` or
 **Next time:** run `./medium-reader login` and click **Connect and open Medium**.
 You install the extension once; each reader run gets a new connection. Your
 Medium sign-in normally stays saved in Chrome.
+
+The extension needs the terminal reader running to send it stories. Closing the
+reader ends that run's connection, but the extension stays installed in Chrome.
+To reconnect, start the reader again and use the new **Connect and open Medium**
+page. An old connection page belongs to the earlier reader run.
 
 ### Search and read
 
@@ -219,6 +230,10 @@ medium-reader
 
 Activation changes which Python and commands that shell finds. It does not start
 the app. Closing the terminal ends activation; `deactivate` also undoes it.
+This only affects Python commands in that shell. It does not uninstall `.venv`,
+disable the Chrome extension, disconnect a reader that is already running, or
+sign you out of Medium. The `./medium-reader` launcher works with or without
+activation.
 
 For a permanent command on your PATH, install this directory using either
 [pipx](https://pipx.pypa.io/stable/installation/) or
